@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>나무게임</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            background-color: #0b2229; 
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-image: linear-gradient(180deg, #10333d 0%, #0b2229 100%);
+        }
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background-color: #1a4d55; 
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5), inset 0 0 15px rgba(255, 255, 255, 0.1);
+            border: 10px solid #c9a756; 
+            border-radius: 20px;
+            padding: 20px;
+            margin: 20px 10px;
+        }
+
+        /* 중앙 게임판 스타일 */
+        .game-panel {
+            background-color: #12373f;
+            border: 4px solid #c9a756;
+            border-radius: 10px;
+            padding: 20px 10px;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+        
+        /* 핀 (막대기 역할) - 퍼지는 정도 조절 */
+        .peg-row {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 35px; /* 행 간 간격 증가 (더 퍼지게) */
+        }
+        .peg {
+            width: 5px;
+            height: 5px;
+            background-color: #c9a756; /* Gold Dot */
+            border-radius: 50%;
+            margin: 0 18px; /* 핀 간 간격을 더 넓게 조정하여 퍼지는 효과 증대 */
+            position: relative;
+            box-shadow: 0 0 3px #000;
+        }
+        
+        /* 최상단 중앙 핀 스타일 */
+        .peg[data-layer="0"][data-index="0"] {
+            margin: 5px auto 20px auto !important; /* 가운데 정렬 및 상하 마진 */
+            width: 5px;
+            height: 5px;
+        }
+
+
+        .slot {
+            width: calc(100% / 6);
+            padding: 10px 0;
+            text-align: center;
+            background-color: #3b7672; /* Darker Green Slot */
+            border-right: 1px solid #c9a756;
+            cursor: pointer;
+            transition: background-color 0.1s, transform 0.1s;
+        }
+        .slot:first-child { border-left: 1px solid #c9a756; }
+        .slot:hover {
+            background-color: #4a918a;
+            transform: translateY(-2px);
+        }
+        .slot-bar {
+            border-radius: 5px;
+            overflow: hidden;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        /* 공 모양 및 모션 */
+        .ball {
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background-color: #ffffff;
+            border: 3px solid #ff4d4d;
+            position: absolute;
+            top: 0;
+            left: 0;
+            /* 공 소환 시 애니메이션 제거 */
+            transition: all 0.2s ease-in-out; 
+            z-index: 10;
+            box-shadow: 0 0 10px rgba(255, 0, 0, 0.8);
+        }
+        
+        /* 베팅 옵션 스타일 */
+        .bet-option {
+            transition: all 0.2s;
+            cursor: pointer;
+            border: 2px solid #3b7672;
+            background-color: #12373f;
+        }
+        .bet-option:hover {
+            background-color: #1a4d55;
+            transform: translateY(-1px);
+        }
+        .bet-option.selected {
+            border: 3px solid #c9a756 !important; /* Gold Highlight */
+            box-shadow: 0 0 15px rgba(201, 167, 86, 0.7);
+        }
+        .status-message-box {
+            background-color: #c9a756; /* Gold Background */
+            color: #1a4d55; /* Dark Teal Text */
+            border-radius: 15px;
+            border: 3px solid #e0e0e0;
+            min-height: 5rem;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+    <script>
+        // --- 상수 설정 ---
+        const INITIAL_POINTS = 50000;
+        const GAME_CYCLE_SECONDS = 60; 
+        const BETTING_LOCK_SECONDS = 10; 
+        const COMMISSION_RATE = 0.05; // 5%
+        const BOARD_ROWS = 5; 
+        const BINS = BOARD_ROWS + 1; 
+
+        // 배당률 (확률의 역수)
+        const PAYOUT_MULTIPLIERS = {
+            1: 32,      
+            2: 32 / 5,  // 6.4
+            3: 32 / 10, // 3.2
+            4: 32 / 10, // 3.2
+            5: 32 / 5,  // 6.4
+            6: 32      
+        };
+
+        // --- 상태 변수 ---
+        let points = INITIAL_POINTS;
+        let timer = GAME_CYCLE_SECONDS;
+        let timerInterval = null;
+        let isBettingOpen = true;
+        let betPlaced = false; 
+        let round = 1; 
+
+        let bet = {
+            amount: 100,
+            type: null,
+            value: null,
+            slotText: '',
+            isPointDeducted: false 
+        };
+
+        // --- DOM 요소 캐싱 ---
+        const $points = () => document.getElementById('points');
+        const $timer = () => document.getElementById('timer');
+        const $roundDisplay = () => document.getElementById('roundDisplay');
+        const $betAmountInput = () => document.getElementById('betAmount');
+        const $betButton = () => document.getElementById('betButton');
+        const $statusMessage = () => document.getElementById('statusMessage');
+        const $pyramidContainer = () => document.getElementById('pyramidContainer');
+        const $ball = () => document.getElementById('ball');
+        const $lastResult = () => document.getElementById('lastResult');
+
+        // --- 유틸리티 함수 ---
+        function formatPoints(p) {
+            // 입력된 값이 너무 클 경우 지수 표기법을 방지하고 일반 문자열로 반환
+            if (p > 1e15) {
+                return String(p).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+            }
+            return p.toLocaleString('ko-KR');
+        }
+
+        // --- 초기화 및 UI 업데이트 ---
+        function updateUI() {
+            $points().textContent = formatPoints(points);
+            
+            // 금액 입력 필드 값 업데이트 (toLocaleString 없이 순수 숫자/문자열로)
+            const betInput = $betAmountInput();
+            if (betInput) {
+                // 입력 필드의 현재 값을 가져와 bet.amount에 반영 (수동 입력 때문)
+                // 베팅 금액이 0보다 작으면 0으로 고정 (음수 방지)
+                bet.amount = Math.max(0, parseInt(betInput.value) || 0);
+                
+                // [수정] bet.amount의 실제 값으로 input value를 덮어씁니다.
+                // 이는 버튼이 bet.amount를 업데이트한 후 호출되었을 때,
+                // input 필드에도 이 값이 반영되게 하기 위함입니다.
+                betInput.value = String(bet.amount);
+            }
+            
+            $roundDisplay().textContent = round;
+            
+            // 베팅 버튼 활성화/비활성화 조건
+            $betButton().disabled = !isBettingOpen || betPlaced || bet.amount <= 0 || bet.amount > points || !bet.type;
+            
+            // 베팅 마감(isBettingOpen=false) 또는 베팅 완료(betPlaced=true) 시 금액 입력 필드 및 버튼 비활성화
+            const betInputDisabled = !isBettingOpen || betPlaced;
+            if (betInput) betInput.disabled = betInputDisabled;
+
+            const $amountButtons = document.querySelectorAll('.amount-modifier-btn');
+            $amountButtons.forEach(btn => btn.disabled = betInputDisabled);
+            // --------------------------------------------------------------------
+            
+            // 타이머 업데이트
+            const minutes = Math.floor(timer / 60);
+            const seconds = timer % 60;
+            $timer().textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            
+            // 베팅 상태 메시지
+            if (!isBettingOpen) {
+                $statusMessage().innerHTML = `<span class="font-black">🚨 베팅 마감! 결과를 기다립니다. 🚨</span>`;
+            } else if (betPlaced) {
+                // 베팅 금액을 입력된 값 (bet.amount) 기준으로 표시
+                $statusMessage().innerHTML = `<span class="font-black">✅ 베팅 완료! ${formatPoints(bet.amount)} P가 차감되었습니다. 결과를 기다려 주세요.</span>`;
+            } else if (timer <= BETTING_LOCK_SECONDS) {
+                $statusMessage().innerHTML = `<span class="font-black">⏳ 곧 마감! ${timer}초 남았습니다.</span>`;
+            } else if (bet.type) {
+                $statusMessage().innerHTML = `<span class="font-black">✔️ 베팅 준비 완료: ${bet.slotText} 에 ${formatPoints(bet.amount)} 포인트</span>`;
+            } else {
+                $statusMessage().innerHTML = `원하는 베팅 종류와 금액을 선택하세요.`;
+            }
+
+            // 베팅 옵션 하이라이트 초기화
+            document.querySelectorAll('.bet-option').forEach(el => el.classList.remove('selected'));
+            if (bet.type && bet.value) {
+                // bet.value가 숫자가 아닌 경우도 있으므로 ID 형식을 문자열 그대로 사용
+                const id = bet.type === 'EXACT' ? `opt-${bet.type}-${bet.value}` : `opt-${bet.type}-${bet.value}`;
+                const selectedElement = document.getElementById(id);
+                if (selectedElement) {
+                    selectedElement.classList.add('selected');
+                }
+            }
+        }
+
+        // --- 타이머 및 게임 로직 ---
+        function startTimer() {
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                timer--;
+                if (timer <= BETTING_LOCK_SECONDS && isBettingOpen) {
+                    isBettingOpen = false;
+                    // 베팅 마감 즉시 UI 업데이트하여 입력 필드 비활성화
+                    updateUI(); 
+                }
+                
+                if (timer < 0) {
+                    clearInterval(timerInterval);
+                    timer = GAME_CYCLE_SECONDS;
+                    isBettingOpen = true; 
+                    runGame();
+                }
+                updateUI();
+            }, 1000);
+        }
+
+        async function runGame() {
+            // 1. 시뮬레이션 실행 및 결과 계산
+            const { finalSlot, firstMove, path } = runSimulation();
+            
+            const currentBet = { ...bet };
+            const currentRound = round; 
+            
+            // 2. 공 시각화 및 애니메이션
+            $ball().style.display = 'block';
+            
+            const animationStepDelay = 150; 
+            const finalDropDuration = 500; 
+            const highlightDuration = 1000;
+
+            // [수정] 공 모션 실행
+            await animateBall(path, animationStepDelay, finalDropDuration, highlightDuration);
+
+            // 3. 당첨금 계산 및 결과 메시지 생성
+            let netPayout = 0; 
+            const resultSlotText = `${finalSlot}번`;
+            const resultParityText = finalSlot % 2 === 0 ? '짝수' : '홀수';
+            const resultFirstMoveText = firstMove === 'L' ? '좌' : '우';
+
+            // 요청하신 결과 형식: n회차 결과: n번 / 홀수 / 좌
+            let resultMessage = `${currentRound}회차 결과: **${resultSlotText} / ${resultParityText} / ${resultFirstMoveText}**`;
+            
+            let betInfo = ''; // 베팅 정보는 최종 결과 옆에 작게 표시
+
+            if (betPlaced) { 
+                const betAmount = currentBet.amount;
+                // 베팅 정보를 간결하게 표시 (예: (베팅: 1~3번 그룹))
+                betInfo = `(베팅: ${currentBet.slotText})`; 
+                
+                const payout = calculateWinnings(currentBet, finalSlot, firstMove);
+                netPayout = payout.netPayout; 
+                
+                if (netPayout > betAmount) {
+                    const profit = netPayout - betAmount;
+                    resultMessage += `<span class="text-green-300 font-bold ml-4">🎉 승리! (+${formatPoints(profit)} P 순이익) ${betInfo}</span>`;
+                } else if (netPayout === 0) { 
+                    resultMessage += `<span class="text-red-300 font-bold ml-4">😢 패배. (${formatPoints(betAmount)} P 손실) ${betInfo}</span>`;
+                } else {
+                    // (원금 회수) 같은 상황이 발생할 경우
+                    resultMessage += `<span class="text-gray-400 ml-4">무승부. (0 P 변화) ${betInfo}</span>`;
+                }
+                
+                points += netPayout; 
+            } else {
+                resultMessage += `<span class="text-gray-400 ml-4">베팅하지 않았습니다.</span>`;
+            }
+
+            // 4. 결과 출력 및 포인트 업데이트
+            $lastResult().innerHTML = resultMessage;
+            
+            // 5. 다음 라운드 준비
+            round++; 
+            bet = { amount: 100, type: null, value: null, slotText: '', isPointDeducted: false }; 
+            betPlaced = false; 
+            startTimer();
+            updateUI();
+        }
+
+        // --- 시뮬레이션 및 애니메이션 ---
+        function runSimulation() {
+            let rights = 0;
+            let path = [];
+            let firstMove = null;
+
+            // 각 핀에서 1/2 확률로 좌/우 선택
+            for (let i = 0; i < BOARD_ROWS; i++) {
+                const move = Math.random() < 0.5 ? 'L' : 'R';
+                if (i === 0) { firstMove = move; }
+                path.push(move);
+                if (move === 'R') { rights++; }
+            }
+            const finalSlot = rights + 1;
+            return { finalSlot, firstMove, path };
+        }
+
+        async function animateBall(path, animationStepDelay, finalDropDuration, highlightDuration) {
+            const ball = $ball();
+            const pyramid = $pyramidContainer();
+            const slots = document.querySelectorAll('.slot');
+            
+            // 최상단 핀 (시작점) 찾기
+            const startPeg = pyramid.querySelector('.peg[data-layer="0"][data-index="0"]');
+            if (!startPeg) return;
+
+            // 1. 공 초기화 및 시작 위치 계산
+            ball.style.transition = 'none'; 
+            
+            await new Promise(resolve => setTimeout(resolve, 0)); 
+            
+            const startX = startPeg.offsetLeft + startPeg.offsetWidth / 2 - ball.offsetWidth / 2;
+            const startY = startPeg.offsetTop - ball.offsetHeight; // 핀 바로 위에서 시작
+
+            ball.style.transform = `translate(${startX}px, ${startY}px)`;
+            
+            let currentPeg = startPeg;
+            let currentPathIndex = 0; 
+            
+            // 2. 핀 사이 모션
+            // 공의 움직임에만 transition 적용
+            ball.style.transition = `all ${animationStepDelay / 1000}s ease-in-out`; 
+
+            for (let i = 0; i < BOARD_ROWS; i++) {
+                await new Promise(resolve => setTimeout(resolve, animationStepDelay));
+
+                const move = path[i];
+                let nextPeg = null;
+                
+                const currentLayer = parseInt(currentPeg.dataset.layer);
+                const currentIndex = parseInt(currentPeg.dataset.index);
+
+                let nextIndex = currentIndex;
+                if (move === 'R') {
+                    nextIndex = currentIndex + 1;
+                    currentPathIndex++; 
+                }
+
+                nextPeg = pyramid.querySelector(`.peg[data-layer="${currentLayer + 1}"][data-index="${nextIndex}"]`);
+
+                if (nextPeg) {
+                    currentPeg = nextPeg;
+                    // 다음 핀 위치로 이동 (핀 중앙 X, 핀 상단 Y)
+                    const nextX = nextPeg.offsetLeft + nextPeg.offsetWidth / 2 - ball.offsetWidth / 2;
+                    const nextY = nextPeg.offsetTop - ball.offsetHeight; 
+                    
+                    ball.style.transform = `translate(${nextX}px, ${nextY}px)`; 
+                } else {
+                    break;
+                }
+            }
+
+            await new Promise(resolve => setTimeout(resolve, animationStepDelay));
+
+            // 3. 최종 슬롯으로 낙하
+            const finalSlotIndex = currentPathIndex; 
+            const finalSlotElement = slots[finalSlotIndex];
+            
+            if (finalSlotElement) {
+                const slotCenterX = finalSlotElement.offsetLeft + finalSlotElement.offsetWidth / 2;
+                const finalY = finalSlotElement.offsetTop - (ball.offsetHeight / 2); // 슬롯 중앙 상단
+                
+                ball.style.transition = `all ${finalDropDuration / 1000}s ease-in`;
+                ball.style.transform = `translate(${slotCenterX - (ball.offsetWidth / 2)}px, ${finalY}px)`;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, finalDropDuration));
+            
+            // 4. 공 숨기기 및 하이라이트
+            ball.style.display = 'none'; 
+            ball.style.transition = 'none'; 
+
+            if (finalSlotElement) {
+                finalSlotElement.classList.add('bg-yellow-600', 'animate-pulse');
+                await new Promise(resolve => setTimeout(resolve, highlightDuration));
+                finalSlotElement.classList.remove('bg-yellow-600', 'animate-pulse');
+            }
+        }
+
+
+        // --- 베팅 로직 ---
+        function handleBetSelection(type, value, text) {
+            if (!isBettingOpen || betPlaced) {
+                if (!isBettingOpen) $statusMessage().innerHTML = `<span class="font-black text-red-700">❌ 베팅 마감!</span>`;
+                if (betPlaced) $statusMessage().innerHTML = `<span class="font-black text-red-700">❌ 이미 이번 회차에 베팅했습니다.</span>`;
+                return;
+            }
+            
+            if (bet.type === type && bet.value === value) {
+                bet.type = null;
+                bet.value = null;
+                bet.slotText = '';
+            } else {
+                bet.type = type;
+                bet.value = value;
+                bet.slotText = text;
+            }
+            updateUI();
+        }
+
+        function calculateWinnings(betData, finalSlot, firstMove) {
+            const betAmount = betData.amount;
+            let isWin = false;
+            let grossPayoutMultiplier = 0; 
+
+            // 1. 승패 판단 및 배수 결정
+            switch (betData.type) {
+                case 'EXACT': 
+                    if (finalSlot === betData.value) {
+                        isWin = true;
+                        grossPayoutMultiplier = PAYOUT_MULTIPLIERS[finalSlot];
+                    }
+                    break;
+                case 'GROUP': 
+                    const resultGroup = finalSlot <= 3 ? '1-3' : '4-6';
+                    if (resultGroup === betData.value) {
+                        isWin = true;
+                        grossPayoutMultiplier = 2;
+                    }
+                    break;
+                case 'PARITY': 
+                    const resultParity = finalSlot % 2 === 0 ? 'EVEN' : 'ODD';
+                    if (resultParity === betData.value) {
+                        isWin = true;
+                        grossPayoutMultiplier = 2;
+                    }
+                    break;
+                case 'FIRST': 
+                    if (firstMove === betData.value) {
+                        isWin = true;
+                        grossPayoutMultiplier = 2;
+                    }
+                    break;
+            }
+
+            // 2. 최종 지급액 (Net Payout) 계산
+            let netPayout = 0;
+
+            if (isWin) {
+                // 승리 시: (원금 회수) + (베팅금 x 승리 배수) x 95%
+                
+                const totalGrossWinnings = betAmount * grossPayoutMultiplier;
+                // 큰 숫자의 정밀도 유지를 위해 Math.floor를 사용하지만, JavaScript는 2^53까지는 정수 정확도를 보장합니다.
+                const netPrizeWithFee = Math.floor(totalGrossWinnings * (1 - COMMISSION_RATE)); 
+                
+                // 최종 지급액 (원금 + 순 상금)
+                netPayout = betAmount + netPrizeWithFee;
+                
+                return { netPayout: netPayout };
+
+            } else {
+                // 패배 시: 원금 돌려받지 못함 (Net Payout = 0)
+                netPayout = 0;
+                return { netPayout: netPayout }; 
+            }
+        }
+        
+        // [수정] 베팅 금액을 증감시키는 함수
+        function modifyBetAmount(modifier) {
+            // isBettingOpen, betPlaced 상태를 한 번 더 확인하여 금액 변경이 불가능한 상태인지 확인
+            if (!isBettingOpen || betPlaced) {
+                return;
+            }
+            
+            let newAmount;
+            
+            if (modifier === 'all') {
+                newAmount = points;
+            } else {
+                // 현재 입력된 값(input.value)을 기준으로 계산
+                const currentInputAmount = parseInt($betAmountInput().value) || 0;
+                newAmount = currentInputAmount + modifier;
+            }
+            
+            // 금액은 0보다 크거나 같아야 하고, 보유 포인트를 초과할 수 없습니다.
+            newAmount = Math.max(0, Math.min(points, newAmount));
+            
+            // bet.amount 업데이트
+            bet.amount = newAmount;
+
+            // [수정] 입력 필드에 직접 값을 설정하여 사용자가 확인할 수 있도록 함
+            const betInput = $betAmountInput();
+            if (betInput) {
+                betInput.value = String(bet.amount);
+            }
+            
+            // bet.amount를 업데이트했으므로 UI를 다시 그립니다.
+            updateUI();
+        }
+
+
+        // --- 이벤트 핸들러 ---
+        function placeBet() {
+            if (!isBettingOpen) {
+                $statusMessage().innerHTML = `<span class="font-black text-red-700">❌ 베팅 마감! 다음 게임까지 기다려 주세요.</span>`;
+                return;
+            }
+            if (betPlaced) {
+                $statusMessage().innerHTML = `<span class="font-black text-red-700">❌ 이미 이번 회차에 베팅했습니다. (1회 제한)</span>`;
+                return;
+            }
+            if (bet.amount <= 0 || bet.amount > points) {
+                $statusMessage().innerHTML = `<span class="font-black text-red-700">❌ 베팅 금액이 유효하지 않거나 포인트가 부족합니다.</span>`;
+                return;
+            }
+            if (!bet.type) {
+                $statusMessage().innerHTML = `<span class="font-black text-red-700">❌ 베팅 옵션을 선택해 주세요.</span>`;
+                return;
+            }
+
+            // 💡 베팅 시작 시 포인트 차감
+            points -= bet.amount;
+            bet.isPointDeducted = true;
+            betPlaced = true; 
+            
+            $statusMessage().innerHTML = `<span class="font-black">✅ 베팅 성공! ${formatPoints(bet.amount)} P가 차감되었습니다. 결과를 기다려 주세요.</span>`;
+            updateUI(); 
+        }
+
+        // --- 초기 렌더링 ---
+        function renderPyramid() {
+            const container = $pyramidContainer();
+            // 공의 초기 위치를 위한 빈 행
+            let html = '<div class="peg-row h-[20px] relative"><div id="ball" class="ball" style="display:none;"></div></div>';
+            
+            // 최상단 핀은 중앙에 하나만
+            html += `<div class="peg-row" data-layer="0">
+                        <div class="peg" data-layer="0" data-index="0"></div>
+                     </div>`;
+            
+            let pegCount = 2; // 다음 레이어부터 핀이 2개
+            
+            // 핀 레이어
+            for (let layer = 1; layer <= BOARD_ROWS; layer++) {
+                let rowHtml = `<div class="peg-row" data-layer="${layer}">`;
+                
+                for (let i = 0; i < pegCount; i++) {
+                    rowHtml += `<div class="peg" data-layer="${layer}" data-index="${i}"></div>`;
+                }
+                rowHtml += '</div>';
+                html += rowHtml;
+                pegCount++;
+            }
+            
+            // 최종 슬롯 (Bin)
+            html += `<div class="flex slot-bar mt-2">`;
+            for (let i = 1; i <= BINS; i++) {
+                let multiplier = PAYOUT_MULTIPLIERS[i];
+                html += `<div class="slot flex flex-col justify-center items-center text-sm font-extrabold text-white" id="opt-EXACT-${i}" data-value="${i}" onclick="handleBetSelection('EXACT', ${i}, '${i}번 슬롯')">
+                            <span class="text-3xl">${i}</span>
+                            <span class="text-yellow-200 text-xs">배당 ${multiplier.toFixed(1)}</span>
+                        </div>`;
+            }
+            html += '</div>';
+
+            container.innerHTML = html;
+        }
+
+        // --- 초기 실행 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            renderPyramid();
+            startTimer();
+            $lastResult().innerHTML = '아직 베팅 기록이 없습니다.';
+            
+            // DOMContentLoaded 시점에 input 값을 bet.amount에 반영하여 UI 동기화
+            const initialBetInput = $betAmountInput();
+            if (initialBetInput) {
+                bet.amount = parseInt(initialBetInput.value) || 100;
+            }
+            updateUI();
+
+            $betAmountInput().addEventListener('input', (e) => {
+                // 입력 값이 바뀌면 bet.amount 업데이트
+                const value = parseInt(e.target.value) || 0;
+                bet.amount = Math.max(0, value);
+                updateUI();
+            });
+            
+            $betButton().addEventListener('click', placeBet);
+        });
+    </script>
+
+    <div class="container">
+        <h1 class="text-2xl font-black text-center text-yellow-300 mb-6 border-b-2 border-yellow-300 pb-2">
+            나무게임
+        </h1>
+
+        <div class="game-panel mb-6 p-4">
+            <div class="text-center mb-4">
+                <p class="text-xl font-bold text-gray-200">다음 나무게임을 기다리고 있습니다.</p>
+                <div class="text-3xl font-black text-yellow-300 mt-2">
+                    <span id="roundDisplay">1</span>회차 대기 중 <span id="timer">00:30</span>
+                </div>
+            </div>
+            <div id="lastResult" class="text-center text-sm p-3 bg-gray-900 border border-gray-600 rounded-lg">
+                </div>
+        </div>
+
+        <div class="game-panel mb-8 p-6">
+            <h2 class="text-xl font-bold mb-4 text-center text-yellow-200">게임판</h2>
+            <div id="pyramidContainer" class="w-full relative py-4">
+                </div>
+        </div>
+        
+        <div class="bg-gray-900 p-5 rounded-lg border-2 border-yellow-500 shadow-inner">
+            <div class="status-message-box p-3 text-center mb-4">
+                <p id="statusMessage" class="text-xl font-bold"></p>
+            </div>
+            
+            <h2 class="text-xl font-bold mb-4 text-yellow-300">베팅하기 (회차당 1회 제한)</h2>
+            
+            <div class="mb-4">
+                <label for="betAmount" class="block text-sm font-medium text-gray-300 mb-2">베팅 금액 (P)</label>
+                <div class="flex space-x-2">
+                    <input type="number" id="betAmount" min="100" class="w-full p-3 rounded-lg bg-gray-800 text-white border border-yellow-600 focus:ring-yellow-500 focus:border-yellow-500" value="100">
+                    
+                    <button onclick="modifyBetAmount(1000);" class="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-black rounded-lg text-sm font-semibold transition amount-modifier-btn">+1천</button>
+                    <button onclick="modifyBetAmount(10000);" class="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-black rounded-lg text-sm font-semibold transition amount-modifier-btn">+1만</button>
+                    <button onclick="modifyBetAmount('all');" class="px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition amount-modifier-btn">ALL IN</button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-3 mb-6">
+                <div id="opt-GROUP-1-3" onclick="handleBetSelection('GROUP', '1-3', '1~3번 그룹')" class="bet-option p-3 rounded-lg text-center">
+                    <p class="text-lg font-bold text-blue-300">1 ~ 3번</p>
+                    <p class="text-xs text-gray-400">배당 2.0</p>
+                </div>
+                <div id="opt-PARITY-ODD" onclick="handleBetSelection('PARITY', 'ODD', '홀수')" class="bet-option p-3 rounded-lg text-center">
+                    <p class="text-lg font-bold text-purple-300">홀수</p>
+                    <p class="text-xs text-gray-400">배당 2.0</p>
+                </div>
+                <div id="opt-FIRST-L" onclick="handleBetSelection('FIRST', 'L', '좌')" class="bet-option p-3 rounded-lg text-center">
+                    <p class="text-lg font-bold text-orange-300">좌</p>
+                    <p class="text-xs text-gray-400">배당 2.0</p>
+                </div>
+
+                <div id="opt-GROUP-4-6" onclick="handleBetSelection('GROUP', '4-6', '4~6번 그룹')" class="bet-option p-3 rounded-lg text-center">
+                    <p class="text-lg font-bold text-blue-300">4 ~ 6번</p>
+                    <p class="text-xs text-gray-400">배당 2.0</p>
+                </div>
+                <div id="opt-PARITY-EVEN" onclick="handleBetSelection('PARITY', 'EVEN', '짝수')" class="bet-option p-3 rounded-lg text-center">
+                    <p class="text-lg font-bold text-purple-300">짝수</p>
+                    <p class="text-xs text-gray-400">배당 2.0</p>
+                </div>
+                <div id="opt-FIRST-R" onclick="handleBetSelection('FIRST', 'R', '우')" class="bet-option p-3 rounded-lg text-center">
+                    <p class="text-lg font-bold text-orange-300">우</p>
+                    <p class="text-xs text-gray-400">배당 2.0</p>
+                </div>
+            </div>
+            
+            <button id="betButton" class="w-full p-4 rounded-lg bg-green-700 hover:bg-green-800 text-white text-xl font-black transition disabled:bg-gray-500 disabled:cursor-not-allowed">
+                베팅 실행
+            </button>
+        </div>
+
+        <div class="text-center pt-4 text-sm text-yellow-300">
+            <div class="font-bold">보유 포인트: <span id="points" class="text-2xl ml-1">50,000</span> P</div>
+        </div>
+    </div>
+</body>
+</html>
